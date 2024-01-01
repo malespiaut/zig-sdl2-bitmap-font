@@ -3,6 +3,7 @@ const math = std.math;
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
     @cInclude("SDL2/SDL_image.h");
+    @cInclude("SDL2/SDL_mixer.h");
 });
 var prng = std.rand.DefaultPrng.init(0);
 var xoshiro = prng.random();
@@ -16,15 +17,9 @@ var g_texture: *c.SDL_Texture = undefined;
 
 var g_quit: bool = false;
 
-// Font
-//const FontName = enum { gob33, plettre };
-//var g_font: [2]Font = undefined;
+var g_font: Font = undefined;
 
-var g_font_gob33: Font = undefined;
-var g_font_plettre: Font = undefined;
-var g_font_lettre: Font = undefined;
-
-const FontRW = struct {
+const Font = struct {
     renderer: *c.SDL_Renderer,
     texture: *c.SDL_Texture,
     char_width: u8,
@@ -32,7 +27,7 @@ const FontRW = struct {
     char_rects: [256]c.SDL_Rect,
 
     pub fn init(renderer: *c.SDL_Renderer, file: []const u8, char_width: u8, char_height: u8) Font {
-        var result: Font = Font{
+        const result: Font = Font{
             .renderer = undefined,
             .texture = undefined,
             .char_width = 0,
@@ -65,48 +60,6 @@ const FontRW = struct {
             }
         }
 
-        result.renderer = renderer;
-        result.texture = texture;
-        result.char_width = char_width;
-        result.char_height = char_height;
-        result.char_rects = char_rects;
-        return result;
-    }
-};
-
-//XXX: Older implementation that don't embed the file.
-const Font = struct {
-    renderer: *c.SDL_Renderer,
-    texture: *c.SDL_Texture,
-    char_width: u8,
-    char_height: u8,
-    char_rects: [256]c.SDL_Rect,
-
-    pub fn init(renderer: *c.SDL_Renderer, char_sheet_path: [*c]const u8, char_width: u8, char_height: u8) Font {
-        const texture: *c.SDL_Texture = c.IMG_LoadTexture(renderer, char_sheet_path) orelse {
-            c.SDL_Log("Unable to load image as texture: %s", c.SDL_GetError());
-            //return error.SDLIMGLoadTextureFailed;
-            return Font{
-                .renderer = null,
-                .texture = null,
-                .char_width = 0,
-                .char_height = 0,
-                .char_rects = undefined,
-            };
-        };
-
-        var char_rects: [256]c.SDL_Rect = undefined;
-        var char_code: usize = 0;
-        for (0..16) |row| {
-            for (0..16) |column| {
-                char_rects[char_code].x = char_width * @as(i32, @intCast(column));
-                char_rects[char_code].y = char_height * @as(i32, @intCast(row));
-                char_rects[char_code].w = char_width;
-                char_rects[char_code].h = char_height;
-                char_code += 1;
-            }
-        }
-
         return Font{
             .renderer = renderer,
             .texture = texture,
@@ -115,69 +68,165 @@ const Font = struct {
             .char_rects = char_rects,
         };
     }
-};
 
-pub fn text_print(string: []const u8, position: c.SDL_Point, font: Font) void {
-    var current: c.SDL_Point = c.SDL_Point{ .x = position.x, .y = position.y };
+    pub fn static(self: Font, string: []const u8, position: c.SDL_Point) void {
+        var current: c.SDL_Point = c.SDL_Point{ .x = position.x, .y = position.y };
 
-    for (string) |char| {
-        // Handle new line '\n'
-        if (char == '\n') {
-            current.x = position.x;
-            current.y += font.char_height;
-        } else {
-            // Wrap long lines
-            if (current.x + font.char_width > k_screen_width) {
+        for (string) |char| {
+            // Handle new line '\n'
+            if (char == '\n') {
                 current.x = position.x;
-                current.y += font.char_height;
-            }
+                current.y += self.char_height;
+            } else {
+                // Wrap long lines
+                if (current.x + self.char_width > k_screen_width) {
+                    current.x = position.x;
+                    current.y += self.char_height;
+                }
 
-            // Normal printing operation
+                // Normal printing operation
+                var r: c.SDL_Rect = c.SDL_Rect{
+                    .x = current.x,
+                    .y = current.y,
+                    .w = self.char_width,
+                    .h = self.char_height,
+                };
+
+                if (c.SDL_RenderCopy(self.renderer, self.texture, &self.char_rects[char], &r) != 0) {
+                    c.SDL_Log("Unable to copy a portion of the texture to the current rendering target: %s", c.SDL_GetError());
+                    //XXX: I don't yet understand how to handle return errors that aren't in main().
+                    //return error.SDLRenderCopyFailed;
+                }
+                current.x += self.char_width;
+            }
+        }
+    }
+
+    pub fn shake(self: Font, string: []const u8, position: c.SDL_Point) void {
+        var current: c.SDL_Point = c.SDL_Point{ .x = position.x, .y = position.y };
+
+        for (string) |char| {
             var r: c.SDL_Rect = c.SDL_Rect{
+                .x = current.x + @mod(xoshiro.int(i32), 4),
+                .y = current.y + @mod(xoshiro.int(i32), 4),
+                .w = self.char_width,
+                .h = self.char_height,
+            };
+
+            if (c.SDL_RenderCopy(self.renderer, self.texture, &self.char_rects[char], &r) != 0) {
+                c.SDL_Log("Unable to copy a portion of the texture to the current rendering target: %s", c.SDL_GetError());
+                //XXX: I don't yet understand how to handle return errors that aren't in main().
+                //return error.SDLRenderCopyFailed;
+            }
+            current.x += self.char_width;
+        }
+    }
+
+    pub fn static_sine(self: Font, string: []const u8, position: c.SDL_Point) void {
+        const StaticCounter = struct {
+            var i: f32 = 0.0;
+        };
+
+        var current: c.SDL_FPoint = c.SDL_FPoint{ .x = @as(f32, @floatFromInt(position.x)), .y = @as(f32, @floatFromInt(position.y)) };
+
+        for (string) |char| {
+            var r: c.SDL_FRect = c.SDL_FRect{
+                .x = current.x,
+                .y = current.y + @sin(current.x * 0.05 + StaticCounter.i) * 20, //@sin(current.x + StaticCounter.i + 10) * 1.0,
+                .w = @as(f32, @floatFromInt(self.char_width)),
+                .h = @as(f32, @floatFromInt(self.char_height)),
+            };
+
+            if (c.SDL_RenderCopyF(self.renderer, self.texture, &self.char_rects[char], &r) != 0) {
+                c.SDL_Log("Unable to copy a portion of the texture to the current rendering target: %s", c.SDL_GetError());
+                //XXX: I don't yet understand how to handle return errors that aren't in main().
+                //return error.SDLRenderCopyFailed;
+            }
+            current.x += @as(f32, @floatFromInt(self.char_width));
+        }
+        StaticCounter.i += 0.1;
+    }
+
+    pub fn bounce(self: Font, string: []const u8, position: c.SDL_Point) void {
+        const StaticCounter = struct {
+            var i: f32 = 0.0;
+        };
+
+        var current: c.SDL_FPoint = c.SDL_FPoint{ .y = @as(f32, @floatFromInt(position.y)) - @abs(@sin(StaticCounter.i)) * 16, .x = @as(f32, @floatFromInt(position.x)) };
+
+        for (string) |char| {
+            var r: c.SDL_FRect = c.SDL_FRect{
                 .x = current.x,
                 .y = current.y,
-                .w = font.char_width,
-                .h = font.char_height,
+                .w = @as(f32, @floatFromInt(self.char_width)),
+                .h = @as(f32, @floatFromInt(self.char_height)),
             };
 
-            if (c.SDL_RenderCopy(font.renderer, font.texture, &font.char_rects[char], &r) != 0) {
+            if (c.SDL_RenderCopyF(self.renderer, self.texture, &self.char_rects[char], &r) != 0) {
                 c.SDL_Log("Unable to copy a portion of the texture to the current rendering target: %s", c.SDL_GetError());
                 //XXX: I don't yet understand how to handle return errors that aren't in main().
                 //return error.SDLRenderCopyFailed;
             }
-            current.x += font.char_width;
+            current.x += @as(f32, @floatFromInt(self.char_width));
         }
+        StaticCounter.i += 0.1;
     }
-}
 
-pub fn text_print_sine(string: []const u8, position: c.SDL_Point, font: Font) void {
-    const StaticCounter = struct {
-        var i: f32 = 0.0;
-    };
+    pub fn swing(self: Font, string: []const u8, position: c.SDL_Point) void {
+        const StaticCounter = struct {
+            var i: f32 = 0.0;
+        };
 
-    var current: c.SDL_Point = c.SDL_Point{ .x = position.x, .y = position.y };
+        var current: c.SDL_FPoint = c.SDL_FPoint{ .x = @as(f32, @floatFromInt(position.x)) + @sin(StaticCounter.i) * 160.0, .y = @as(f32, @floatFromInt(position.y)) };
 
-    for (string) |char| {
-        // Handle new line '\n'
-        if (char != '\n') {
-            // Normal printing operation
-            var r: c.SDL_Rect = c.SDL_Rect{
+        for (string) |char| {
+            var r: c.SDL_FRect = c.SDL_FRect{
                 .x = current.x,
-                .y = current.y + @as(i32, @intFromFloat(@sin(StaticCounter.i) * 10.0)),
-                .w = font.char_width,
-                .h = font.char_height,
+                .y = current.y,
+                .w = @as(f32, @floatFromInt(self.char_width)),
+                .h = @as(f32, @floatFromInt(self.char_height)),
             };
 
-            if (c.SDL_RenderCopy(font.renderer, font.texture, &font.char_rects[char], &r) != 0) {
+            if (c.SDL_RenderCopyF(self.renderer, self.texture, &self.char_rects[char], &r) != 0) {
                 c.SDL_Log("Unable to copy a portion of the texture to the current rendering target: %s", c.SDL_GetError());
                 //XXX: I don't yet understand how to handle return errors that aren't in main().
                 //return error.SDLRenderCopyFailed;
             }
-            current.x += font.char_width;
-            StaticCounter.i += 0.01;
+            current.x += @as(f32, @floatFromInt(self.char_width));
+        }
+        StaticCounter.i += 0.02;
+    }
+
+    pub fn sine(self: Font, string: []const u8, position: c.SDL_Point) void {
+        const string_width: usize = string.len * self.char_width;
+        const StaticCounter = struct {
+            var i: f32 = 0.0;
+        };
+
+        var current: c.SDL_FPoint = c.SDL_FPoint{ .x = @as(f32, @floatFromInt(k_screen_width)) - StaticCounter.i, .y = @as(f32, @floatFromInt(position.y)) };
+
+        if (-(@as(f32, @floatFromInt(string_width + k_screen_width))) >= current.x) {
+            StaticCounter.i = 0.0;
+        }
+
+        for (string) |char| {
+            var r: c.SDL_FRect = c.SDL_FRect{
+                .x = current.x,
+                .y = current.y + @sin(current.x * 0.05 + 200) * 20,
+                .w = @as(f32, @floatFromInt(self.char_width)),
+                .h = @as(f32, @floatFromInt(self.char_height)),
+            };
+
+            if (c.SDL_RenderCopyF(self.renderer, self.texture, &self.char_rects[char], &r) != 0) {
+                c.SDL_Log("Unable to copy a portion of the texture to the current rendering target: %s", c.SDL_GetError());
+                //XXX: I don't yet understand how to handle return errors that aren't in main().
+                //return error.SDLRenderCopyFailed;
+            }
+            current.x += @as(f32, @floatFromInt(self.char_width));
+            StaticCounter.i += 0.1;
         }
     }
-}
+};
 
 // Engine
 fn events_process() void {
@@ -203,15 +252,16 @@ fn events_process() void {
 }
 
 fn game_init() !void {
-    g_font_gob33 = FontRW.init(g_renderer, @embedFile("gob33.png"), 8, 10);
-    g_font_plettre = FontRW.init(g_renderer, @embedFile("plettre.png"), 6, 12);
-    g_font_lettre = FontRW.init(g_renderer, @embedFile("lettre.png"), 8, 8);
+    g_font = Font.init(g_renderer, @embedFile("vp16.png"), 16, 16);
 }
 
 fn game_update() void {
-    text_print("Bonjour \x85 tous ! Appr\x82ciez-vous cette \x82criture cursive ? N'oubilez pas d'envoyer un courriel \x85 logicoq@free.fr\nLogicoq, les cocoricogiciels ! ;)", c.SDL_Point{ .x = 0, .y = 0 }, g_font_gob33);
-    text_print("Bonjour \x85 tous ! Appr\x82ciez-vous cette \x82criture cursive ? N'oubilez pas d'envoyer un courriel \x85 logicoq@free.fr\nLogicoq, les cocoricogiciels ! ;)", c.SDL_Point{ .x = 0, .y = 40 }, g_font_plettre);
-    text_print_sine("PLEASE REVIEW MY CODE!!!", c.SDL_Point{ .x = 100, .y = 100 }, g_font_lettre);
+    g_font.bounce("bounce()", c.SDL_Point{ .x = 0, .y = 16 });
+    g_font.shake("shake()", c.SDL_Point{ .x = 0, .y = 16 * 3 });
+    g_font.sine("sine()", c.SDL_Point{ .x = 0, .y = 16 * 5 });
+    g_font.static("static()", c.SDL_Point{ .x = 0, .y = 16 * 7 });
+    g_font.static_sine("static_sine()", c.SDL_Point{ .x = 0, .y = 16 * 9 });
+    g_font.swing("swing()", c.SDL_Point{ .x = (k_screen_width / 2) - (7 * 16) / 2, .y = 16 * 11 });
 }
 
 fn game_draw() void {}
@@ -239,7 +289,7 @@ pub fn main() !void {
     }
     defer c.SDL_Quit();
 
-    g_window = c.SDL_CreateWindow("Bitmap font test", c.SDL_WINDOWPOS_UNDEFINED, c.SDL_WINDOWPOS_UNDEFINED, k_screen_width, k_screen_height, c.SDL_WINDOW_SHOWN | c.SDL_WINDOW_ALLOW_HIGHDPI) orelse
+    g_window = c.SDL_CreateWindow("Zig + SDL2 bitmap font showcase", c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED, k_screen_width, k_screen_height, c.SDL_WINDOW_SHOWN | c.SDL_WINDOW_ALLOW_HIGHDPI) orelse
         {
         c.SDL_Log("Unable to create window: %s", c.SDL_GetError());
         return error.SDLCreateWindowFailed;
@@ -252,6 +302,12 @@ pub fn main() !void {
         return error.SDLCreateRendererFailed;
     };
     defer c.SDL_DestroyRenderer(g_renderer);
+
+    if (c.SDL_RenderSetIntegerScale(g_renderer, c.SDL_TRUE) != 0) {
+        c.SDL_Log("Unable to force integer scale for resolution-independent rendering: %s", c.SDL_GetError());
+        //XXX: Not sure if execution should stop because of that.
+        //return error.SDLRenderSetIntegerScaleFailed;
+    }
 
     if (c.SDL_RenderSetLogicalSize(g_renderer, k_screen_width, k_screen_height) != 0) {
         c.SDL_Log("Unable to set independent resolution for rendering: %s", c.SDL_GetError());
