@@ -5,7 +5,7 @@ const c = @cImport({
     @cInclude("SDL2/SDL_image.h");
     @cInclude("SDL2/SDL_mixer.h");
 });
-var prng = std.rand.DefaultPrng.init(0);
+var prng = std.Random.DefaultPrng.init(0);
 var xoshiro = prng.random();
 
 const k_screen_width: i32 = 320;
@@ -291,16 +291,16 @@ pub fn main() !void {
 
     g_window = c.SDL_CreateWindow("Zig + SDL2 bitmap font showcase", c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED, k_screen_width, k_screen_height, c.SDL_WINDOW_SHOWN | c.SDL_WINDOW_ALLOW_HIGHDPI) orelse
         {
-        c.SDL_Log("Unable to create window: %s", c.SDL_GetError());
-        return error.SDLCreateWindowFailed;
-    };
+            c.SDL_Log("Unable to create window: %s", c.SDL_GetError());
+            return error.SDLCreateWindowFailed;
+        };
     defer c.SDL_DestroyWindow(g_window);
 
     g_renderer = c.SDL_CreateRenderer(g_window, -1, c.SDL_RENDERER_PRESENTVSYNC) orelse
         {
-        c.SDL_Log("Unable to create renderer: %s", c.SDL_GetError());
-        return error.SDLCreateRendererFailed;
-    };
+            c.SDL_Log("Unable to create renderer: %s", c.SDL_GetError());
+            return error.SDLCreateRendererFailed;
+        };
     defer c.SDL_DestroyRenderer(g_renderer);
 
     if (c.SDL_RenderSetIntegerScale(g_renderer, c.SDL_TRUE) != 0) {
