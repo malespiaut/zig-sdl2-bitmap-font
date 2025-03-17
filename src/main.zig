@@ -48,7 +48,7 @@ const Font = struct {
             return result;
         };
 
-        if (!c.SDL_SetSurfaceColorKey(surface, true, 0x000000ff)) {
+        if (!c.SDL_SetSurfaceColorKey(surface, true, 0)) {
             c.SDL_Log("Unable to set the color key (transparent pixel) in a surface: %s", c.SDL_GetError());
             //return error.SDLSetSurfaceColorKeyFailed;
             return result;
